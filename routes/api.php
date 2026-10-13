@@ -3,7 +3,9 @@
 use App\Http\Controllers\OrderController;
 use Illuminate\Support\Facades\Route;
 
-Route::get('/orders/current',  [OrderController::class, 'current']);
-Route::get('/orders/{order}',  [OrderController::class, 'show']);
-Route::get('/orders',          [OrderController::class, 'index']);
-Route::post('/orders',         [OrderController::class, 'store']);
+Route::get('/orders/current',              [OrderController::class, 'current']);
+Route::get('/orders/{order}',              [OrderController::class, 'show']);
+Route::get('/orders',                      [OrderController::class, 'index']);
+Route::post('/orders',                     [OrderController::class, 'store']);
+Route::patch('/orders/{order}/status',     [OrderController::class, 'updateStatus']);
+Route::patch('/orders/{order}/assign-driver', [OrderController::class, 'assignDriver']);

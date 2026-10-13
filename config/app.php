@@ -123,4 +123,8 @@ return [
         'store' => env('APP_MAINTENANCE_STORE', 'database'),
     ],
 
+
+
+    'delivery_fee' => (float) env('DELIVERY_FEE', 10.00),
+
 ];

@@ -2,11 +2,14 @@
 
 namespace App\Http\Controllers;
 
+use App\Contracts\DeliveryFeeCalculator;
 use App\Enums\OrderStatus;
+use App\Http\Requests\AssignDriverRequest;
 use App\Http\Requests\CreateOrderRequest;
 use App\Http\Requests\ListOrdersRequest;
+use App\Http\Requests\UpdateOrderStatusRequest;
 use App\Http\Resources\OrderResource;
-use App\Models\Customer;
+use App\Models\Driver;
 use App\Models\Order;
 use App\Models\Product;
 use App\Models\Restaurant;
@@ -16,9 +19,8 @@ use Illuminate\Support\Facades\DB;
 
 class OrderController extends Controller
 {
-    // Relationships eager-loaded on every order query.
-    // Restaurant uses withoutGlobalScopes so orders from inactive restaurants
-    // still return their restaurant data instead of null.
+    public function __construct(private readonly DeliveryFeeCalculator $feeCalculator) {}
+
     private const EAGER = [
         'customer:id,name,phone',
         'driver:id,name,phone',
@@ -95,7 +97,7 @@ class OrderController extends Controller
     // POST /api/orders
     public function store(CreateOrderRequest $request): JsonResponse
     {
-        // Restaurant must exist and be active (global scope enforces this).
+ 
         $restaurant = Restaurant::find($request->integer('restaurant_id'));
 
         if (! $restaurant) {
@@ -114,7 +116,7 @@ class OrderController extends Controller
             ])
             ->values();
 
-        // Reject if any merged quantity exceeds the per-product limit.
+   
         $quantityErrors = [];
         foreach ($itemsInput as $item) {
             if ($item['quantity'] > 100) {
@@ -153,7 +155,7 @@ class OrderController extends Controller
             return response()->json(['message' => 'The given data was invalid.', 'errors' => $errors], 422);
         }
 
-        $deliveryFee = round((float) $request->input('delivery_fee'), 2);
+        $deliveryFee = $this->feeCalculator->calculate();
 
         $order = DB::transaction(function () use ($request, $restaurant, $itemsInput, $products, $deliveryFee) {
             $subtotal = 0.0;
@@ -197,5 +199,81 @@ class OrderController extends Controller
         $order->loadCount('orderItems');
 
         return response()->json(['data' => new OrderResource($order)], 201);
+    }
+
+    // PATCH /api/orders/{order}/status
+    public function updateStatus(UpdateOrderStatusRequest $request, Order $order): JsonResponse
+    {
+        $allowed = [
+            OrderStatus::Pending->value   => [OrderStatus::Accepted->value,  OrderStatus::Cancelled->value],
+            OrderStatus::Accepted->value  => [OrderStatus::PickedUp->value,  OrderStatus::Cancelled->value],
+            OrderStatus::PickedUp->value  => [OrderStatus::Delivered->value],
+            OrderStatus::Delivered->value => [],
+            OrderStatus::Cancelled->value => [],
+        ];
+
+        $current = $order->status->value;
+        $next    = $request->input('status');
+
+        if (! in_array($next, $allowed[$current], true)) {
+            return response()->json([
+                'message' => 'Invalid status transition.',
+                'errors'  => [
+                    'status' => ["Cannot transition from \"{$current}\" to \"{$next}\"."],
+                ],
+            ], 422);
+        }
+
+        $order->status = OrderStatus::from($next);
+        $order->save();
+
+        $order->load([
+            'customer:id,name,phone',
+            'driver:id,name,phone',
+            'restaurant' => fn ($q) => $q->withoutGlobalScopes()->select('id', 'name', 'address'),
+            'orderItems.product:id,name,price',
+        ]);
+        $order->loadCount('orderItems');
+
+        return response()->json(['data' => new OrderResource($order)]);
+    }
+
+
+    public function assignDriver(AssignDriverRequest $request, Order $order): JsonResponse
+    {
+        $assignable = [OrderStatus::Pending->value, OrderStatus::Accepted->value];
+
+        if (! in_array($order->status->value, $assignable, true)) {
+            return response()->json([
+                'message' => 'Driver cannot be assigned to this order.',
+                'errors'  => [
+                    'order' => ["A driver can only be assigned to a pending or accepted order."],
+                ],
+            ], 422);
+        }
+
+        $driver = Driver::available()->find($request->integer('driver_id'));
+
+        if (! $driver) {
+            return response()->json([
+                'message' => 'The selected driver is not available.',
+                'errors'  => [
+                    'driver_id' => ['The selected driver does not exist or is not active and available.'],
+                ],
+            ], 422);
+        }
+
+        $order->driver_id = $driver->id;
+        $order->save();
+
+        $order->load([
+            'customer:id,name,phone',
+            'driver:id,name,phone',
+            'restaurant' => fn ($q) => $q->withoutGlobalScopes()->select('id', 'name', 'address'),
+            'orderItems.product:id,name,price',
+        ]);
+        $order->loadCount('orderItems');
+
+        return response()->json(['data' => new OrderResource($order)]);
     }
 }
